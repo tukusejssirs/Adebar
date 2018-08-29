@@ -1,11 +1,37 @@
-#!/bin/bash
 ##############################################################################
-# Adebar © 2014, 2015 by Itzchak Rehberg
+# Adebar © 2014 - 2017 by Itzchak Rehberg
 # This is part of the Adebar project, see https://github.com/IzzySoft/Adebar
 # Protected by the GPLv2
 # ----------------------------------------------------------------------------
 # library to get device info
 ##############################################################################
+
+# RadioStat helper (MultiSIM)
+print_radiostat() {
+    declare -A mradio
+    case $1 in
+      0) for key in "${!radio[@]}"; do mradio["$key"]=${radio["$key"]}; done ;;
+      1) for key in "${!radio1[@]}"; do mradio["$key"]=${radio1["$key"]}; done ;;
+    esac
+    echo "* Signal strength: [${mradio[mSignalStrength]}](http://android.stackexchange.com/a/74954/16575)" >> "$devicedoc"
+    echo "* Service state: ${mradio[mServiceState]:0:1} (${servicestate[${radio[mServiceState]:0:1}]})" >> "$devicedoc"
+    echo "* Call state: ${mradio[mCallState]} (${callstate[${mradio[mCallState]}]})" >> "$devicedoc"
+    echo "* Call forwarding active: ${mradio[mCallForwarding]}" >> "$devicedoc"
+    [[ -n "${mradio[mMessageWaiting]}" ]] && echo "* Message waiting: ${mradio[mMessageWaiting]}" >> "$devicedoc"
+    if [[ "${mradio[mDataConnectionPossible]}" = "false" ]]; then
+      echo "* Data connection possible: ${mradio[mDataConnectionPossible]} (${mradio[mDataConnectionReason]})" >> "$devicedoc"
+    else
+      echo "* Data connection possible: ${mradio[mDataConnectionPossible]}" >> "$devicedoc"
+      left="${mradio[mDataActivity]}"
+      echo "* Data activity: ${mradio[mDataActivity]} (${dataactivity[${mradio[mDataActivity]}]})" >> "$devicedoc"
+      if [[ -n "${mradio[mDataConnectionState]}" ]]; then
+        echo "* Data connection state: ${mradio[mDataConnectionState]} (${dataconnectionstate[${mradio[mDataConnectionState]}]})" >> "$devicedoc"
+      elif [[ -n "${mradio[mActiveDataConnectionState]}" ]]; then
+        echo "* Data connection state: ${mradio[mActiveDataConnectionState]} (${dataconnectionstate[${mradio[mActiveDataConnectionState]}]})" >> "$devicedoc"
+      fi
+      [[ -n "${mradio[mDataConnectionApn]}" ]] && echo "* Current APN: ${mradio[mDataConnectionApn]}" >> "$devicedoc"
+    fi
+}
 
 #
 # Get device info
@@ -31,13 +57,16 @@ getDeviceInfo() {
 
   # Parse getprop into DEVPROP & HAVPROPS
   local prop
+  local propname
   while read zeile; do
     [[ -z "${zeile}" ]] && continue
     zeile="${zeile//[\[\]:]/ }"
     prop=($zeile)
     [[ -z "${prop[1]}" ]] && continue
+    propname="${prop[0]}"
     HAVPROPS[${prop[0]%%\.*}]="y"
-    DEVPROP[${prop[0]}]="${prop[1]}"
+    unset prop[0]
+    DEVPROP[${propname}]="${prop[*]}"
   done < "${tmp}"
 
   # Do something with the collected information (and collect more while on it)
@@ -46,6 +75,7 @@ getDeviceInfo() {
   echo "### Product Info" >> "$devicedoc"
   echo "* Manufacturer: ${DEVPROP[ro.product.manufacturer]}" >> "$devicedoc"    # ro.product.manufacturer=Motorola
   echo "* Model: ${DEVPROP[ro.product.model]} (${DEVPROP[ro.product.device]})" >> "$devicedoc"  # ro.product.model=A953 (ro.product.device=milestone2)
+  [[ -n "${DEVPROP[ro.build.date]}" ]] && echo "* Manufatured on: ${DEVPROP[ro.build.date]}" >> "$devicedoc"
   local serial="${DEVPROP[ro.serialno]}"                                        # 015ECFC703028007
   [[ -z "$serial" ]] && {
     if [[ -n "${DEVPROP[ro.boot.serialno]}" ]]; then
@@ -63,8 +93,12 @@ getDeviceInfo() {
   [[ -n "${DEVPROP[ro.board.platform]}" ]] && echo "* Platform: ${DEVPROP[ro.board.platform]}" >> "$devicedoc" # omap3
   [[ -n "${DEVPROP[ro.radio.hw.version]}" ]] && echo "* Radio version: ${DEVPROP[ro.radio.hw.version]}" >> "$devicedoc" # SJUG5980AA
   [[ -n "${DEVPROP[gsm.baseband.version]}" ]] && echo "* Baseband: ${DEVPROP[gsm.baseband.version]}" >> "$devicedoc" # L6260_MODEM_SIC_02.1233.00
+  if [[ -n "${DEVPROP[ro.boot.bootloader]}" ]]; then echo "* Bootloader: ${DEVPROP[ro.boot.bootloader]}" >> "$devicedoc"
+  elif [[ -n "${DEVPROP[ro.bootloader]}" ]]; then echo "* Bootloader: ${DEVPROP[ro.bootloader]}" >> "$devicedoc"
+  fi
   [[ -n "${DEVPROP[wlan.chip.vendor]}${DEVPROP[wlan.chip.version]}" ]] && echo "* WiFi vendor / version: ${DEVPROP[wlan.chip.vendor]} / ${DEVPROP[wlan.chip.version]}" >> "$devicedoc" # brcm / bcm4330x
   echo "* CPU: ${DEVPROP[ro.product.cpu.abi]}" >> "$devicedoc"                  # ro.product.cpu.abi=armeabi-v7a
+  [[ -n "${DEVPROP[ro.product.cpu.abilist]}" ]] && echo "* CPU compatibility: ${DEVPROP[ro.product.cpu.abilist]}" >> "$devicedoc"
   echo "* Screen density: ${DEVPROP[ro.sf.lcd_density]}" >> "$devicedoc"        # ro.sf.lcd_density=240
   echo >> "$devicedoc"
 
@@ -98,6 +132,7 @@ getDeviceInfo() {
   [[ -n "${DEVPROP[ro.modversion]}" ]] && echo "* Mod: ${DEVPROP[ro.modversion]}" >> "$devicedoc" # ro.modversion=10-20121228-NIGHTLY-milestone2
   [[ -n "${DEVPROP[ro.build.id]}" ]] && echo "* BuildID: ${DEVPROP[ro.build.id]}" >> "$devicedoc" # JZO54K
   echo "* Fingerprint: ${DEVPROP[ro.build.fingerprint]}" >> "$devicedoc" # MOTO/A953_O2DE/milestone2:2.3.6/4.5.1-134_DFP-132/1317968148:user/release-keys
+  [[ "$(adb ${ADBOPTS} shell whence uname)" ]] && echo "* Kernel: $(adb ${ADBOPTS} shell uname -r)" >> "$devicedoc" || echo "* Kernel: $(adb ${ADBOPTS} shell busybox uname -r)" >> "$devicedoc"
   echo "* Factory language: ${DEVPROP[ro.product.locale.language]}_${DEVPROP[ro.product.locale.region]}" >> "$devicedoc" # en_US
   echo "* Configured language: ${DEVPROP[persist.sys.language]}_${DEVPROP[persist.sys.country]}" >> "$devicedoc" # de_DE
   echo "* Configured timezone: ${DEVPROP[persist.sys.timezone]}" >> "$devicedoc" # Europe/Berlin
@@ -131,8 +166,9 @@ getDeviceInfo() {
       zeile="${zeile//[$'\t\r\n']}"
       right="${zeile#*:}"
       [[ "${right:0:1}" = " " ]] && right="${right:1}"
+      [[ -z "${right:1}" ]] && continue
       left="${zeile%:*}"
-      left="${left#"${left%%[![:space:]]*}"}" # remove leading spaces
+      left="${left#"${left%%[![:space:]]*}"}" # remove leading spaces"
       case "$left" in
         "status") echo "* ${left}: ${right} (${battstat[${right}]})"  >> "$devicedoc" ;;
         "health") echo "* ${left}: ${right} (${batthealth[${right}]})"  >> "$devicedoc" ;;
@@ -143,61 +179,44 @@ getDeviceInfo() {
     doProgress "  + Radio status" 3
     echo >> "$devicedoc"
     echo "### Radio Status" >> "$devicedoc"
+    [[ -n "${DEVPROP[gsm.version.baseband]}" ]]  && echo "* Baseband: ${DEVPROP[gsm.version.baseband]}" >> "$devicedoc"
+    [[ -n "${DEVPROP[gsm.version.baseband1]}" ]] && echo "* Baseband (SIM2): ${DEVPROP[gsm.version.baseband1]}" >> "$devicedoc"
+    [[ -n "${DEVPROP[gsm.version.ril-impl]}" ]]  && {
+      if [[ -n "${DEVPROP[rild.libpath]}" ]]; then echo "* RIL: ${DEVPROP[gsm.version.ril-impl]} (\`${DEVPROP[rild.libpath]}\`)" >> "$devicedoc"
+      else echo "* RIL: ${DEVPROP[gsm.version.ril-impl]}" >> "$devicedoc"
+      fi
+    }
     declare -A radio
+    declare -A radio1
     adb ${ADBOPTS} shell dumpsys telephony.registry|grep "=" > $tmp
     local callstate=(idle ringing off-hook)
     local servicestate=(service "out of service" "emergency only" "powered off")
     local dataactivity=(none in out inout)
     local dataconnectionstate=(disconnected connecting connected suspended)
+    local phoneid=0
+    local vname
     while IFS='' read zeile; do
       zeile="${zeile//[$'\t\r\n']}"
-      zeile="${zeile#"${zeile%%[![:space:]]*}"}"
-      radio[${zeile%%=*}]="${zeile#*=}"
-    done < "${tmp}"
-    echo "* Signal strength: [${radio[mSignalStrength]}](http://android.stackexchange.com/a/74954/16575)" >> "$devicedoc"
-    echo "* Service state: ${radio[mServiceState]:0:1} (${servicestate[${radio[mServiceState]:0:1}]})" >> "$devicedoc"
-    echo "* Call state: ${radio[mCallState]} (${callstate[${radio[mCallState]}]})" >> "$devicedoc"
-    echo "* Call forwarding active: ${radio[mCallForwarding]}" >> "$devicedoc"
-    if [[ "${radio[mDataConnectionPossible]}" = "false" ]]; then
-      echo "* Data connection possible: ${radio[mDataConnectionPossible]} (${radio[mDataConnectionReason]})" >> "$devicedoc"
-    else
-      echo "* Data connection possible: ${radio[mDataConnectionPossible]}" >> "$devicedoc"
-      left="${radio[mDataActivity]}"
-      echo "* Data activity: ${radio[mDataActivity]} (${dataactivity[${radio[mDataActivity]}]})" >> "$devicedoc"
-      if [[ -n "${radio[mDataConnectionState]}" ]]; then
-        echo "* Data connection state: ${radio[mDataConnectionState]} (${dataconnectionstate[${radio[mDataConnectionState]}]})" >> "$devicedoc"
-      elif [[ -n "${radio[mActiveDataConnectionState]}" ]]; then
-        echo "* Data connection state: ${radio[mActiveDataConnectionState]} (${dataconnectionstate[${radio[mActiveDataConnectionState]}]})" >> "$devicedoc"
+      zeile="${zeile#"${zeile%%[![:space:]]*}"}" #"
+      vname="${zeile%%=*}"
+      if [[ "$vname" = "Phone Id" ]]; then # MultiSIM
+        phoneid="${zeile#*=}"
+        continue
       fi
-      [[ -n "${radio[mDataConnectionApn]}" ]] && echo "* Current APN: ${radio[mDataConnectionApn]}" >> "$devicedoc"
-    fi
+      [[ "${vname:0:1}" == "{" ]] && break # only registration history follows here
+      case $phoneid in
+        0) radio[${zeile%%=*}]="${zeile#*=}" ;;
+        1) radio1[${zeile%%=*}]="${zeile#*=}" ;;
+        *) oops "dev" "${LINENO}" "Unexpected phone id: '${zeile#*=}'" 2 ;;
+      esac
+    done < "${tmp}"
+    [[ $phoneid -gt 0 ]] && echo "#### SIM1" >> "$devicedoc"
+    print_radiostat 0
+    [[ $phoneid -gt 0 ]] && {
+      echo "#### SIM2" >> "$devicedoc"
+      print_radiostat 1
+    }
   fi
-
-  doProgress "  + networking details" 3
-  echo "### Networking details" >> "$devicedoc"
-  [[ -n "${DEVPROP[wifi.interface]}" ]] && echo "* WiFi Interface: ${DEVPROP[wifi.interface]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[net.dns1]}${DEVPROP[net.dns2]}" ]] && echo "* Default DNS server: ${DEVPROP[net.dns1]} / ${DEVPROP[net.dns2]}" >> "$devicedoc"
-  echo "* WiFi driver status: ${DEVPROP[wlan.driver.status]}" >> "$devicedoc"
-  echo "* WiFi scan interval: ${DEVPROP[wifi.supplicant_scan_interval]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[dhcp.wlan0.dns1]}" ]] && echo "* WiFi DHCP DNS: ${DEVPROP[dhcp.wlan0.dns1]} / ${DEVPROP[dhcp.wlan0.dns2]} / ${DEVPROP[dhcp.wlan0.dns3]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[dhcp.wlan0.gateway]}" ]] && echo "* WiFi default gateway: ${DEVPROP[dhcp.wlan0.gateway]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[dhcp.wlan0.ipaddress]}" ]] && echo "* WiFi IP: ${DEVPROP[dhcp.wlan0.ipaddress]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[mobiledata.interfaces]}" ]] && echo "* Mobile data interfaces: ${DEVPROP[mobiledata.interfaces]}" >> "$devicedoc"
-  echo >> "$devicedoc"
-
-  # Storage
-  doProgress "  + storage details" 3
-  echo "### Storage details" >> "$devicedoc"
-  [[ -n "${DEVPROP[EXTERNAL_STORAGE_MOUNT]}" ]] && echo "* Internal SD mount point: ${DEVPROP[EXTERNAL_STORAGE_MOUNT]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[EXTERNAL_ADD_STORAGE_MOUNT]}" ]] && echo "* External SD mount point: ${DEVPROP[EXTERNAL_ADD_STORAGE_MOUNT]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[ro.crypto.fuse_sdcard]}" ]] && echo "* Internal SD via FUSE: ${DEVPROP[ro.crypto.fuse_sdcard]}" >> "$devicedoc"
-  [[ -n "${DEVPROP[ro.crypto.state]}" ]] && echo "* Storage encrypted: ${DEVPROP[ro.crypto.state]}" >> "$devicedoc"
-  [[ ${MK_PARTINFO} -gt 0 ]] && writePartInfo "$devicedoc"
-  echo "* Disk statistics:" >> "$devicedoc"
-  adb ${ADBOPTS} shell dumpsys diskstats > ${tmp}
-  while read zeile; do
-    echo -e "    * ${zeile/// }" >> "$devicedoc"
-  done < ${tmp}
 
   if [[ -n "${DEVPROP[gsm.operator.alpha]}" ]]; then # Provider info
     doProgress "  + Provider info" 3
@@ -222,6 +241,57 @@ getDeviceInfo() {
     [[ -n "${DEVPROP[gsm.operator.numeric.2]}" ]] && echo "* Provider code: ${DEVPROP[gsm.operator.numeric.2]}" >> "$devicedoc"
     [[ -n "${DEVPROP[gsm.sim.state.2]}" ]] && echo "* SIM state: ${DEVPROP[gsm.sim.state.2]}" >> "$devicedoc"
   fi
+
+  doProgress "  + networking details" 3
+  echo "### Networking details" >> "$devicedoc"
+  echo "* Hostname: ${DEVPROP[net.hostname]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[wifi.interface]}" ]] && echo "* WiFi Interface: ${DEVPROP[wifi.interface]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[wlan.driver.config]}" ]] && echo "* WiFi config: \`${DEVPROP[wlan.driver.config]}\`" >> "$devicedoc"
+  [[ -n "${DEVPROP[net.dns1]}${DEVPROP[net.dns2]}" ]] && echo "* Default DNS server: ${DEVPROP[net.dns1]} / ${DEVPROP[net.dns2]}" >> "$devicedoc"
+  echo "* WiFi driver status: ${DEVPROP[wlan.driver.status]}" >> "$devicedoc"
+  echo "* WiFi scan interval: ${DEVPROP[wifi.supplicant_scan_interval]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[dhcp.wlan0.dns1]}" ]] && echo "* WiFi DHCP DNS: ${DEVPROP[dhcp.wlan0.dns1]} / ${DEVPROP[dhcp.wlan0.dns2]} / ${DEVPROP[dhcp.wlan0.dns3]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[dhcp.wlan0.gateway]}" ]] && echo "* WiFi default gateway: ${DEVPROP[dhcp.wlan0.gateway]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[dhcp.wlan0.ipaddress]}" ]] && echo "* WiFi IP: ${DEVPROP[dhcp.wlan0.ipaddress]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[mobiledata.interfaces]}" ]] && echo "* Mobile data interfaces: ${DEVPROP[mobiledata.interfaces]}" >> "$devicedoc"
+  echo >> "$devicedoc"
+
+  # Storage
+  doProgress "  + storage details" 3
+  echo "### Storage details" >> "$devicedoc"
+  [[ -n "${DEVPROP[EXTERNAL_STORAGE_MOUNT]}" ]] && echo "* Internal SD mount point: ${DEVPROP[EXTERNAL_STORAGE_MOUNT]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[EXTERNAL_ADD_STORAGE_MOUNT]}" ]] && echo "* External SD mount point: ${DEVPROP[EXTERNAL_ADD_STORAGE_MOUNT]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[ro.crypto.fuse_sdcard]}" ]] && echo "* Internal SD via FUSE: ${DEVPROP[ro.crypto.fuse_sdcard]}" >> "$devicedoc"
+  [[ -n "${DEVPROP[ro.crypto.state]}" ]] && echo "* Storage encrypted: ${DEVPROP[ro.crypto.state]}" >> "$devicedoc"
+  [[ ${MK_PARTINFO} -gt 0 ]] && writePartInfo "$devicedoc"
+  echo "* Disk statistics:" >> "$devicedoc"
+  adb ${ADBOPTS} shell dumpsys diskstats > ${tmp}
+  while read zeile; do
+    echo -e "    * ${zeile/// }" >> "$devicedoc"
+  done < ${tmp}
+
+  # Misc
+  doProgress "  + misc details" 3
+  echo "### Miscellaneous" >> "$devicedoc"
+  [[ -n "${DEVPROP[keyguard.no_require_sim]}" ]] && {
+    if [[ "${DEVPROP[keyguard.no_require_sim]}" = "true" ]]; then echo "* SIM required for operation: No" >> "$devicedoc"
+    else echo "* SIM required for operation: Yes" >> "$devicedoc"
+    fi
+  }
+  [[ -n "${DEVPROP[persist.sys.usb.config]}" ]] && echo "* persistent USB modules: ${DEVPROP[persist.sys.usb.config]}" >> "$devicedoc"
+  if [[ ${DEVPROP[ro.adb.secure]} -eq 1 || ${DEVPROP[ro.secure]} -eq 1 ]]; then echo "* ADB secured: Yes" >> "$devicedoc"
+  else echo "* ADB secured: No (running as root)" >> "$devicedoc"
+  fi
+  [[ -n "${DEVPROP[ro.build.selinux]}" ]] && {
+    if [[ ${DEVPROP[ro.build.selinux]} -eq 1 ]]; then echo "* SELinux enabled: Yes" >> "$devicedoc"
+    elif [[ ${DEVPROP[ro.build.selinux]} -eq 0 ]]; then echo "* SELinux enabled: No" >> "$devicedoc"
+    fi
+  }
+  [[ -n "${DEVPROP[ro.alarm_boot]}" ]] && {
+    if [[ "${DEVPROP[ro.alarm_boot]}" = "false" ]]; then echo "* Last boot triggered by RTC alarm: No" >> "$devicedoc"
+    else echo "* Last boot triggered by RTC alarm: Yes" >> "$devicedoc"
+    fi
+  }
 
 
   # ADB calls for the next two blocks must be made with default IFS or will fail
@@ -248,7 +318,7 @@ getDeviceInfo() {
   done
   echo "* $(grep 'Last backup pass' "$tmp")" >> "$devicedoc"
   echo "* $(grep 'Ever backed up:' "$tmp")" >> "$devicedoc"
-  echo "* $(grep 'Pending backup:' "$tmp")" >> "$devicedoc"
+  [[ -n "$(grep 'Pending backup:' "$tmp")" ]] && echo "* $(grep 'Pending backup:' "$tmp")" >> "$devicedoc"
   echo "* Participants:" >> "$devicedoc"
   for zeile in $(grep -A1 "uid:" "$tmp"|awk '{print $1}'); do
     case "$zeile" in

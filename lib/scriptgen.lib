@@ -1,6 +1,5 @@
-#!/bin/bash
 ##############################################################################
-# Adebar © 2014, 2015 by Itzchak Rehberg
+# Adebar © 2014-2016 by Itzchak Rehberg
 # This is part of the Adebar project, see https://github.com/IzzySoft/Adebar
 # Protected by the GPLv2
 # ----------------------------------------------------------------------------
@@ -16,21 +15,159 @@ getDisabled() {
 
   doProgress "Obtaining list of disabled apps"
 
+  if [[ $DEVICE_SDKVER -gt 20 ]]; then  # Android 5.0+
+    local disableCmd="hide"
+  else
+    local disableCmd="disable"
+  fi
   local scriptname="${OUTDIR}/disable"
-  echo "#!/bin/bash" > "${scriptname}"
+  echo "#!${BASH_LOCATION}" > "${scriptname}"
   echo "# Disabled apps for ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')" >> "${scriptname}"
-  echo >> "${scriptname}"
+  echo -e "#\n# Check carefully before executing. Not all of those have been disabled by you :)\n#\n" >> "${scriptname}"
+  echo -e "#\n# Disabled apps\n#\n" >> "${scriptname}"
 
   for app in $(adb ${ADBOPTS} shell "pm list packages -d 2>/dev/null"); do
     if [[ "${app}" =~ ^package: ]]; then
       app=${app//[$'\t\r\n']}
-      echo "adb ${ADBOPTS} shell \"pm disable ${app##*:}\"" >> "${scriptname}"
+      if [[ $ROOT_PMDISABLE -eq 0 ]]; then
+        echo "adb ${ADBOPTS} shell \"pm ${disableCmd} ${app##*:}\"" >> "${scriptname}"
+      else
+        echo "adb ${ADBOPTS} shell \"su -c 'pm ${disableCmd} ${app##*:}'\"" >> "${scriptname}"
+      fi
+    fi
+  done
+
+  [[ $((${MK_USERAPPS} + ${MK_SYSAPPS})) -ne 0 ]] && return     # faster done over there :)
+
+  doProgress "Obtaining list of disabled components"
+
+  local comps
+  local myline
+  scriptname="${OUTDIR}/deadReceivers.sh"
+  echo "#!${BASH_LOCATION}" > "${scriptname}"
+  echo -e "\n#\n# Disabled components for ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')\n#" >> "${scriptname}"
+  for pkg in $(adb ${ADBOPTS} shell "pm list packages 2>/dev/null"); do
+    pkg=${pkg//[$'\t\r\n']}
+    pkg=${pkg##*:}
+    [[ "${pkg}" = "android" ]] && continue
+    comps=$(adb ${ADBOPTS} shell "dumpsys package ${pkg}" | grep -E -A99999 "disabledComponents:" |grep -E -B99999 "enabledComponents:")
+    if [[ -n "${comps}" ]]; then
+      echo >> "${scriptname}"
+      echo "# ${pkg}" >> "${scriptname}"
+      for myline in $comps; do
+        myline=${myline//[$'\t\r\n']}
+        [[ "${myline}" = "disabledComponents:" || "${myline}" = "enabledComponents:" ]] && continue
+        echo "adb ${ADBOPTS} shell \"pm disable ${pkg}/${myline}\"" >> "${scriptname}"
+      done
+    fi
+  done
+
+  #chmod u+x "${scriptname}"
+}
+
+
+#
+# Create script to enable ALL apps
+#
+getEnable() {
+  [[ $MK_APPENABLE -ne 1 ]] && return
+
+  doProgress "Creating script to enable ALL apps"
+
+  if [[ $DEVICE_SDKVER -gt 20 ]]; then  # Android 5.0+
+    local enableCmd="unhide"
+  else
+    local enableCmd="enable"
+  fi
+  local scriptname="${OUTDIR}/enable"
+  echo "#!${BASH_LOCATION}" > "${scriptname}"
+  echo "# Enable ALL apps on the device" >> "${scriptname}"
+  echo "#" >> "${scriptname}"
+  echo "# Use with care – some apps might be disabled for a good reason :)" >> "${scriptname}"
+  echo >> "${scriptname}"
+
+  for app in $(adb ${ADBOPTS} shell "pm list packages 2>/dev/null"); do
+    if [[ "${app}" =~ ^package: ]]; then
+      app=${app//[$'\t\r\n']}
+      if [[ $ROOT_PMDISABLE -eq 0 ]]; then
+        echo "adb ${ADBOPTS} shell \"pm ${enableCmd} ${app##*:}\"" >> "${scriptname}"
+      else
+        echo "adb ${ADBOPTS} shell \"su -c 'pm ${enableCmd} ${app##*:}'\"" >> "${scriptname}"
+      fi
     fi
   done
 
   chmod u+x "${scriptname}"
 }
 
+#
+# Prompt for retry to backup 41-byte backup files or delete
+#
+RETRY41() {
+  echo >> "$backupscript"
+  echo "NOT_BACKED_UP=(\$(find -maxdepth 1 -type f -size -42c | xargs))" >> "$backupscript"
+  echo "while [[ \"\${#NOT_BACKED_UP[@]}\" -gt 0 ]]; do" >> "$backupscript"
+  echo "  echo -e \"\\Some of the apps are not backed up properly (\"\${#NOT_BACKED_UP[@]}\"):\\n\"" >> "$backupscript"
+  echo "  for i in \"\${NOT_BACKED_UP[@]}\"; do" >> "$backupscript"
+  echo "    i=\"\${i%.ab}\"" >> "$backupscript"
+  echo "    echo \"\${i##*/}\"" >> "$backupscript"
+  echo "  done" >> "$backupscript"
+  echo "  echo" >> "$backupscript"
+  echo "  validbackres=0" >> "$backupscript"
+  echo "  backres=n" >> "$backupscript"
+  echo "  while ! ((\$validbackres)); do" >> "$backupscript"
+  echo "    read -n 1 -p \"Try to backup them again? (y/N): \" backres" >> "$backupscript"
+  echo "    if [[ \"\${backres,,}\" == [Nn] || -z \"\${backres}\" ]]; then" >> "$backupscript"
+  echo "      validbackres=1" >> "$backupscript"
+  echo "      break=1" >> "$backupscript"
+  echo "      validrmres=0" >> "$backupscript"
+  echo "      rmres=n" >> "$backupscript"
+  echo "      while ! ((\$validrmres)); do" >> "$backupscript"
+  echo "        echo" >> "$backupscript"
+  echo "        read -n 1 -p \"Delete these backup files? (y/N): \" rmres" >> "$backupscript"
+  echo "        if [[ \"\${rmres,,}\" == [Nn] || -z \"\${rmres}\" ]]; then" >> "$backupscript"
+  echo "          validrmres=1" >> "$backupscript"
+  echo "        elif [[ \"\${rmres,,}\" == [Yy] ]]; then" >> "$backupscript"
+  echo "          validrmres=1" >> "$backupscript"
+  echo "          for i in \"\${NOT_BACKED_UP[@]}\"; do" >> "$backupscript"
+  echo "            rm \"\${i}\"" >> "$backupscript"
+  echo "          done" >> "$backupscript"
+  echo "          echo" >> "$backupscript"
+  echo "        else" >> "$backupscript"
+  echo "          validrmres=0" >> "$backupscript"
+  echo -n "          echo -e \"" >> "$backupscript"
+  (($USE_ANSI)) && echo -n "\\e[0;31m" >> "$backupscript"
+  echo -n "\\nResponse not valid, please answer y or n\\n" >> "$backupscript"
+  (($USE_ANSI)) && echo -n "\\e[m" >> "$backupscript"
+  echo "\"" >> "$backupscript"
+  echo "        fi" >> "$backupscript"
+  echo "      done" >> "$backupscript"
+  echo "    elif [[ \"\${backres,,}\" == [Yy] ]]; then" >> "$backupscript"
+  echo "      validbackres=1" >> "$backupscript"
+  echo "      echo" >> "$backupscript"
+  echo "      for i in \"\${NOT_BACKED_UP[@]}\"; do" >> "$backupscript"
+  echo "        rm \"\${i}\"" >> "$backupscript"
+  echo "        i=\"\${i%.ab}\"" >> "$backupscript"
+  if (($AUTO_CONFIRM)); then
+    echo "        autoConfirmedBackup \"\${i##*/}\"" >> "$backupscript"
+  else
+    echo "        doBackup \"\${i##*/}\"" >> "$backupscript"
+  fi
+  echo "      done" >> "$backupscript"
+  echo "      NOT_BACKED_UP=()" >> "$backupscript"
+  echo "      NOT_BACKED_UP=(\$(find -maxdepth 1 -type f -size -42c | xargs))" >> "$backupscript"
+  echo "    else" >> "$backupscript"
+  echo "      validbackres=0" >> "$backupscript"
+  echo -n "      echo -e \"" >> "$backupscript"
+  (($USE_ANSI)) && echo -n "\\e[0;31m" >> "$backupscript"
+  echo -n "\\nResponse not valid, please answer y or n\\n" >> "$backupscript"
+  (($USE_ANSI)) && echo -n "\\e[m" >> "$backupscript"
+  echo "\"" >> "$backupscript"
+  echo "    fi" >> "$backupscript"
+  echo "  done" >> "$backupscript"
+  echo "  ((\$break)) && break" >> "$backupscript"
+  echo "done" >> "$backupscript"
+}
 
 #
 # Create script to backup all user-apps
@@ -42,28 +179,154 @@ getUserAppBackup() {
 
   local backupscript="$OUTDIR/userbackup"
   local restorescript="$OUTDIR/userrestore"
-  echo "#!/bin/bash" > "$backupscript"
+  echo "#!${BASH_LOCATION}" > "$backupscript"
   echo "# Backup script for ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')" >> "$backupscript"
   echo "# Backs up all user apps including their .apk files and data" >> "$backupscript"
   echo "# Feel free to comment out/remove apps you don't want/need to be backed up." >> "$backupscript"
   echo  >> "$backupscript"
   echo "[ ! -d \"${USERDIR}\" ] && mkdir \"${USERDIR}\"" >> "$backupscript"
+  echo "cd \"${USERDIR}\"" >> "$backupscript"
   echo >> "$backupscript"
   echo "function doBackup() {" >> "$backupscript"
-  echo -e "  adb ${ADBOPTS} backup -f \"${USERDIR}/\${1}.ab\" -apk \${1}" >> "$backupscript"
+  prep=""
+  if (($SKIP_EXISTING_USERBACKUP)); then
+  prep="  "
+    echo -e "  if [ -s \"\${1}.ab\" ]; then" >> "$backupscript"
+    echo -e "    echo \"skiping: \${1}: already backed up.\"" >> "$backupscript"
+    echo -e "  else" >> "$backupscript"
+  fi
+  echo -e "  ${prep}echo \"backing up: \${1}\"" >> "$backupscript"
+  echo -e "  ${prep}adb ${ADBOPTS} backup -f \"\${1}.ab\" -apk \${1}" >> "$backupscript"
+  if (($SKIP_EXISTING_USERBACKUP)); then
+    echo -e "  fi" >> "$backupscript"
+  else
+    prep=""
+  fi
   echo  "  sleep 1" >> "$backupscript" # prevent ADB daemon from being "blocked" (e.g. on LG P880)
   echo "}" >> "$backupscript"
   echo >> "$backupscript"
 
-  echo "#!/bin/bash" > "$restorescript"
+  if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+      echo "function autoConfirm() {" >> "$backupscript"
+      if [[ ! -z "${BACKUP_PASSWORD}" ]]; then
+          echo -e "    adb ${ADBOPTS} shell input text \"${BACKUP_PASSWORD}\" \\" >> "$backupscript"
+          echo    "    && sleep 1" >> "$backupscript" # wait between sending text and keycodes
+      fi
+      echo -e "    adb ${ADBOPTS} shell input keyevent 22 \\" >> "$backupscript"
+      echo    "    && sleep 1 \\" >> "$backupscript" # wait between keycodes
+      echo -e "    && adb ${ADBOPTS} shell input keyevent 23" >> "$backupscript"
+      echo "}" >> "$backupscript"
+      echo >> "$backupscript"
+      echo    "function autoConfirmedBackup() {" >> "$backupscript"
+      echo -e "    doBackup \"\${1}\" &" >> "$backupscript"
+      prep=""
+      if (($SKIP_EXISTING_USERBACKUP)); then
+        prep="    "
+        echo -e "    if [ ! -s \"\${1}.ab\" ]; then" >> "$backupscript"
+      fi
+      echo -e "    ${prep}JOB=\$!" >> "$backupscript"
+      echo -e "    ${prep}sleep ${MK_AUTOCONFIRM_DELAY}" >> "$backupscript"
+      echo -e "    ${prep}autoConfirm" >> "$backupscript"
+      echo -e "    ${prep}while [[ \$? == 0 ]]; do" >> "$backupscript"
+      echo -e "        ${prep}sleep 1" >> "$backupscript"
+      echo -e "        ${prep}ps -p \${JOB} &>/dev/null" >> "$backupscript"
+      echo -e "    ${prep}done" >> "$backupscript"
+      if (($SKIP_EXISTING_USERBACKUP)); then
+        echo -e "    fi" >> "$backupscript"
+      else
+        prep=""
+      fi
+      echo -e "}" >> "$backupscript"
+      echo >> "$backupscript"
+      echo -e "echo \"NOTICE: Do not interact with your device while performing automated backups!\"" >> "$backupscript"
+      echo >> "$backupscript"
+  fi
+
+  echo "#!${BASH_LOCATION}" > "$restorescript"
   echo "# Restore script from ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')" >> "$restorescript"
   echo "# Restores all app backups. Comment out (or delete) those you do not wish to restore." >> "$restorescript"
   echo  >> "$restorescript"
+  echo "cd \"${USERDIR}\"" >> "$restorescript"
+  echo  >> "$restorescript"
+  echo "function doRestore() {" >> "$restorescript"
+  if [[ "${MK_APPRESTORE_DELAY,,}" = "p" ]]; then
+    echo "  read -n 1 -p \"Do you wish to restore \${1#*/} now? (Y/n) \" res" >> "$restorescript"
+    echo "  echo" >> "$restorescript"
+    echo "  if [[ \"\${res,,}\" = \"y\" || -z \"\${res}\" ]]; then" >> "$restorescript"
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "    adb ${ADBOPTS} restore \${1}" >> "$restorescript"
+    echo "  else" >> "$restorescript"
+    echo "    echo \"Skipping \${1#*/}\"" >> "$restorescript"
+    echo "  fi" >> "$restorescript"
+  elif [[ "${MK_APPRESTORE_DELAY}" = "0" ]]; then
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  elif [[ ${MK_APPRESTORE_DELAY} =~ ^[0-9]+$ ]]; then
+    echo "  sleep ${MK_APPRESTORE_DELAY}" >> "$restorescript"
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  else # fallback for invalid setting
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  fi
+  echo "}" >> "$restorescript"
+  echo  >> "$restorescript"
+
+  if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+      echo "function autoConfirm() {" >> "$restorescript"
+      if [[ ! -z "${BACKUP_PASSWORD}" ]]; then
+          echo -e "    adb ${ADBOPTS} shell input text \"${BACKUP_PASSWORD}\" \\" >> "$restorescript"
+          echo    "    && sleep 1" >> "$restorescript" # wait between sending text and keycodes
+      fi
+      echo -e "    adb ${ADBOPTS} shell input keyevent 22 \\" >> "$restorescript"
+      echo    "    && sleep 1 \\" >> "$restorescript" # wait between keycodes
+      echo -e "    && adb ${ADBOPTS} shell input keyevent 23" >> "$restorescript"
+      echo "}" >> "$restorescript"
+      echo >> "$restorescript"
+      echo    "function autoConfirmedRestore() {" >> "$restorescript"
+      echo -e "    doRestore \"\${1}\" &" >> "$restorescript"
+      echo -e "    JOB=\$!" >> "$restorescript"
+      echo -e "    sleep ${MK_AUTOCONFIRM_DELAY}" >> "$restorescript"
+      echo -e "    autoConfirm" >> "$restorescript"
+      echo -e "    while [[ \$? == 0 ]]; do" >> "$restorescript"
+      echo -e "        sleep 1" >> "$restorescript"
+      echo -e "        ps -p \${JOB} &>/dev/null" >> "$restorescript"
+      echo -e "    done" >> "$restorescript"
+      echo -e "}" >> "$restorescript"
+      echo >> "$restorescript"
+      echo -e "echo \"NOTICE: Do not interact with your device while performing automated restores!\"" >> "$restorescript"
+      echo >> "$restorescript"
+  fi
+
+  if [[ ${AUTO_UNLOCK} -eq 1 ]]; then
+    echo "echo \"Trying to unlock your screen...\"" >> "$backupscript"
+    echo "echo \"Trying to unlock your screen...\"" >> "$restorescript"
+    echo "adb ${ADBOPTS} shell input keyevent 82" >> "$backupscript"
+    echo "adb ${ADBOPTS} shell input keyevent 82" >> "$restorescript"
+    echo "sleep 2" >> "$backupscript"
+    echo "sleep 2" >> "$restorescript"
+    echo  >> "$backupscript"
+    echo  >> "$restorescript"
+  fi
 
   for app in "${userApps[@]}"; do
-    echo "doBackup ${app}" >> "$backupscript"
-    echo -e "adb ${ADBOPTS} restore \"${USERDIR}/${app}.ab\"" >> "$restorescript"
+    if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+        echo "autoConfirmedBackup ${app}" >> "$backupscript"
+        echo "autoConfirmedRestore ${app}.ab" >> "$restorescript"
+    else
+        echo "doBackup ${app}" >> "$backupscript"
+        echo -e "doRestore \"${app}.ab\"" >> "$restorescript"
+    fi
   done
+
+  (($RETRY_FAILED_BACKUPS)) && RETRY41
+
+  echo >> "$backupscript"
+  echo "cd - > /dev/null" >> "$backupscript"
+  echo >> "$backupscript"
+  echo >> "$restorescript"
+  echo "cd - > /dev/null" >> "$restorescript"
+  echo >> "$restorescript"
 
   chmod u+x "$backupscript" "$restorescript"
 }
@@ -79,46 +342,161 @@ getSystemAppBackup() {
 
   local backupscript="$OUTDIR/sysbackup"
   local restorescript="$OUTDIR/sysrestore"
-  echo "#!/bin/bash" > "$backupscript"
+  echo "#!${BASH_LOCATION}" > "$backupscript"
   echo "# Backup script for ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')" >> "$backupscript"
   echo "# Backs up the data (not the .apk files) of all your system apps" >> "$backupscript"
   echo "# Feel free to comment out/remove apps you don't want/need to be backed up." >> "$backupscript"
   echo  >> "$backupscript"
   echo "[ ! -d \"${SYSDIR}\" ] && mkdir \"${SYSDIR}\"" >> "$backupscript"
+  echo "cd \"${SYSDIR}\"" >> "$backupscript"
   echo >> "$backupscript"
   echo "function doBackup() {" >> "$backupscript"
-  echo -e "  adb ${ADBOPTS} backup -f \"${SYSDIR}/\${1}.ab\" -apk \${1}" >> "$backupscript"
+  prep=""
+  if (($SKIP_EXISTING_SYSBACKUP)); then
+    prep="  "
+    echo -e "  if [ -f \"\${1}.ab\" ]; then" >> "$backupscript"
+    echo -e "    echo \"skiping: \${1}: already backed up.\"" >> "$backupscript"
+    echo -e "  else" >> "$backupscript"
+  fi
+  echo -e "  ${prep}echo \"backing up: \${1}\"" >> "$backupscript"
+  echo -e "  ${prep}adb ${ADBOPTS} backup -f \"\${1}.ab\" -noapk \${1}" >> "$backupscript"
+  if (($SKIP_EXISTING_SYSBACKUP)); then
+    echo -e "  fi" >> "$backupscript"
+  else
+    prep=""
+  fi
   echo  "  sleep 1" >> "$backupscript" # prevent ADB daemon from being "blocked" (e.g. on LG P880)
   echo "}" >> "$backupscript"
   echo >> "$backupscript"
 
-  echo "#!/bin/bash" > "$restorescript"
+  if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+      echo "function autoConfirm() {" >> "$backupscript"
+          if [[ ! -z "${BACKUP_PASSWORD}" ]]; then
+              echo -e "    adb ${ADBOPTS} shell input text \"${BACKUP_PASSWORD}\" \\" >> "$backupscript"
+              echo    "    && sleep 1" >> "$backupscript" # wait between sending text and keycodes
+          fi
+          echo -e "    adb ${ADBOPTS} shell input keyevent 22 \\" >> "$backupscript"
+          echo    "    && sleep 1 \\" >> "$backupscript" # wait between keycodes
+          echo -e "    && adb ${ADBOPTS} shell input keyevent 23" >> "$backupscript"
+      echo "}" >> "$backupscript"
+      echo >> "$backupscript"
+      echo    "function autoConfirmedBackup() {" >> "$backupscript"
+      echo -e "    doBackup \"\${1}\" &" >> "$backupscript"
+      prep=""
+      if (($SKIP_EXISTING_SYSBACKUP)); then
+      prep="    "
+        echo -e "    if [ ! -s \"\${1}.ab\" ]; then" >> "$backupscript"
+      fi
+      echo -e "    ${prep}JOB=\$!" >> "$backupscript"
+      echo -e "    ${prep}sleep ${MK_AUTOCONFIRM_DELAY}" >> "$backupscript"
+      echo -e "    ${prep}autoConfirm" >> "$backupscript"
+      echo -e "    ${prep}while [[ \$? == 0 ]]; do" >> "$backupscript"
+      echo -e "        ${prep}sleep 1" >> "$backupscript"
+      echo -e "        ${prep}ps -p \${JOB} &>/dev/null" >> "$backupscript"
+      echo -e "    ${prep}done" >> "$backupscript"
+      if (($SKIP_EXISTING_SYSBACKUP)); then
+        echo -e "    fi" >> "$backupscript"
+      else
+        prep=""
+      fi
+      echo -e "}" >> "$backupscript"
+      echo >> "$backupscript"
+  fi
+
+  echo "#!${BASH_LOCATION}" > "$restorescript"
   echo "# Restore script from ${DEVICE_NAME} as of $(date '+%Y-%m-%d %H:%M')" >> "$restorescript"
   echo -e "# Restores all system app data backups.\n# DRAGONS HERE: this might fail if you restore to a different\n# device/Android version/ROM, so be careful!\n# Comment out/delete what you do not wish to restore." >> "$restorescript"
   echo  >> "$restorescript"
+  echo "cd \"${SYSDIR}\"" >> "$restorescript"
+  echo >> "$restorescript"
+  echo "function doRestore() {" >> "$restorescript"
+  if [[ "${MK_APPRESTORE_DELAY,,}" = "p" ]]; then
+    echo "  read -n 1 -p \"Do you wish to restore \${1#*/} now? (Y/n) \" res" >> "$restorescript"
+    echo "  echo" >> "$restorescript"
+    echo "  if [[ \"\${res,,}\" = \"y\" || -z \"\${res}\" ]]; then" >> "$restorescript"
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "    adb ${ADBOPTS} restore \${1}" >> "$restorescript"
+    echo "  else" >> "$restorescript"
+    echo "    echo \"Skipping \${1#*/}\"" >> "$restorescript"
+    echo "  fi" >> "$restorescript"
+  elif [[ "${MK_APPRESTORE_DELAY}" = "0" ]]; then
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  elif [[ ${MK_APPRESTORE_DELAY} =~ ^[0-9]+$ ]]; then
+    echo "  sleep ${MK_APPRESTORE_DELAY}" >> "$restorescript"
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  else # fallback for invalid setting
+    echo -e "  echo \"restoring: \${1}\"" >> "$restorescript"
+    echo "  adb ${ADBOPTS} restore \$1" >> "$restorescript"
+  fi
+  echo "}" >> "$restorescript"
+  echo  >> "$restorescript"
+
+  if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+      echo "function autoConfirm() {" >> "$restorescript"
+          if [[ ! -z "${BACKUP_PASSWORD}" ]]; then
+              echo -e "    adb ${ADBOPTS} shell input text \"${BACKUP_PASSWORD}\" \\" >> "$restorescript"
+              echo    "    && sleep 1" >> "$restorescript" # wait between sending text and keycodes
+          fi
+          echo -e "    adb ${ADBOPTS} shell input keyevent 22 \\" >> "$restorescript"
+          echo    "    && sleep 1 \\" >> "$restorescript" # wait between keycodes
+          echo -e "    && adb ${ADBOPTS} shell input keyevent 23" >> "$restorescript"
+      echo "}" >> "$restorescript"
+      echo >> "$restorescript"
+      echo    "function autoConfirmedRestore() {" >> "$restorescript"
+      echo -e "    doRestore \"\${1}\" &" >> "$restorescript"
+      echo -e "    JOB=\$!" >> "$restorescript"
+      echo -e "    sleep ${MK_AUTOCONFIRM_DELAY}" >> "$restorescript"
+      echo -e "    autoConfirm" >> "$restorescript"
+      echo -e "    while [[ \$? == 0 ]]; do" >> "$restorescript"
+      echo -e "        sleep 1" >> "$restorescript"
+      echo -e "        ps -p \${JOB} &>/dev/null" >> "$restorescript"
+      echo -e "    done" >> "$restorescript"
+      echo -e "}" >> "$restorescript"
+      echo >> "$restorescript"
+  fi
 
   for app in "${sysApps[@]}"; do
     prep=""
     if [ "$app" = "com.android.sharedstoragebackup" ]; then # shared storage
-      prep="  "
-      echo >> "$backupscript"
+      if ! (($AUTO_BACKUP_SHARED)); then
+        prep="  "
+        echo >> "$backupscript"
+      fi
       echo  >> "$restorescript"
-      echo -e "echo \"The following command will download 'shared storage' (i.e. contents of the SD card(s)).\"\necho \"This might take quite a while, depending on what you've stored there.\"" >> "$backupscript"
+      ! (($AUTO_BACKUP_SHARED)) && echo -e "echo \"The following command will download 'shared storage' (i.e. contents of the SD card(s)).\"\necho \"This might take quite a while, depending on what you've stored there.\"" >> "$backupscript"
       echo -e "echo \"The following command will restore 'shared storage' (i.e. contents of the SD card(s)).\"\necho \"This might take quite a while, depending on how big your backup from it was.\"" >> "$restorescript"
-      echo -e "read -n 1 -p \"Do you wish to run this command now? (Y/n) \" res\necho\nif [ \"\${res,,}\" = \"y\" ]; then" >> "$backupscript"
-      echo -e "read -n 1 -p \"Do you wish to run this command now? (Y/n) \" res\necho\nif [ \"\${res,,}\" = \"y\" ]; then" >> "$restorescript"
+      ! (($AUTO_BACKUP_SHARED)) && echo -e "read -n 1 -p \"Do you wish to run this command now? (Y/n) \" res\necho\nif [[ \"\${res,,}\" = \"y\" || -z \"\${res}\" ]]; then" >> "$backupscript"
+      echo -e "read -n 1 -p \"Do you wish to run this command now? (Y/n) \" res\necho\nif [[ \"\${res,,}\" = \"y\" || -z \"\${res}\" ]]; then" >> "$restorescript"
     else
       prep=""
     fi
-    echo "${prep}doBackup ${app}" >> "$backupscript"
-    echo -e "${prep}adb ${ADBOPTS} restore \"${SYSDIR}/${app}.ab\"" >> "$restorescript"
+
+    if [[ "${AUTO_CONFIRM}" -eq 1 ]]; then
+        echo "${prep}autoConfirmedBackup ${app}" >> "$backupscript"
+        echo -e "${prep}autoConfirmedRestore \"${app}.ab\"" >> "$restorescript"
+    else
+        echo "${prep}doBackup ${app}" >> "$backupscript"
+        echo -e "${prep}doRestore \"${app}.ab\"" >> "$restorescript"
+    fi
+
     if [ "$app" = "com.android.sharedstoragebackup" ]; then
-      echo -e "else\n  echo \"Skipping shared storage\"\nfi" >> "$backupscript"
+      ! (($AUTO_BACKUP_SHARED)) && echo -e "else\n  echo \"Skipping shared storage\"\nfi" >> "$backupscript"
       echo -e "else\n  echo \"Skipping shared storage\"\nfi" >> "$restorescript"
-      echo >> "$backupscript"
+      ! (($AUTO_BACKUP_SHARED)) && echo >> "$backupscript"
       echo  >> "$restorescript"
     fi
   done
+
+  RETRY41
+
+  echo >> "$backupscript"
+  echo "cd - > /dev/null" >> "$backupscript"
+  echo >> "$backupscript"
+  echo >> "$restorescript"
+  echo "cd - > /dev/null" >> "$restorescript"
+  echo >> "$restorescript"
 
   chmod u+x "$backupscript" "$restorescript"
 }
@@ -131,7 +509,7 @@ getInstallLoc() {
   [[ $MK_INSTALLLOC -ne 1 ]] && return
   doProgress "Checking default install-location"
   foo="$(adb ${ADBOPTS} shell pm get-install-location)"
-  echo "#!/bin/bash" > "$OUTDIR/defaultInstallLoc"
+  echo "#!${BASH_LOCATION}" > "$OUTDIR/defaultInstallLoc"
   echo "# Set default install location for apps (taken from ${DEVICE_NAME} at $(date '+%Y-%m-%d %H:%M'))" >> "$OUTDIR/defaultInstallLoc"
   echo "pm set-install-location ${foo//[^0-9]/}" >> "$OUTDIR/defaultInstallLoc"
   chmod u+x "$OUTDIR/defaultInstallLoc"

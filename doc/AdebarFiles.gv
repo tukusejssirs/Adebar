@@ -13,7 +13,7 @@ digraph AdebarFiles {
     label = "files pulled from the device";
 
     conf [ shape = folder, label = "./conf" ];
-    conffiles [ shape = Mrecord, fontsize = 11, label = "build.prop|gps.conf|hosts|packages.xml|wpa_supplicant.conf|softap.conf" ];
+    conffiles [ shape = Mrecord, fontsize = 11, label = "build.prop|gps.conf|hosts|packages.xml|wpa_supplicant.conf|softap.conf|xprivacy.xml.gz|xprivacy_dbs.tar.gz" ];
     conf -> conffiles;
   }
 
@@ -37,7 +37,7 @@ digraph AdebarFiles {
     label = "generated scripts";
 
     scripts [ shape = folder, label = "./" ];
-    scriptfiles [ shape= Mrecord, fontsize = 11, label = "deadReceivers.sh|defaultInstallLoc|disable|partBackup|sysbackup|sysrestore|tibu|userbackup|userrestore" ];
+    scriptfiles [ shape= Mrecord, fontsize = 11, label = "deadReceivers.sh|defaultInstallLoc|disable|enable|partBackup|sysbackup|sysrestore|tibu|userbackup|userrestore" ];
     scripts -> scriptfiles;
   }
 

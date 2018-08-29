@@ -1,4 +1,3 @@
-#!/bin/bash
 ##############################################################################
 # Adebar © 2014, 2015 by Itzchak Rehberg
 # This is part of the Adebar project, see https://github.com/IzzySoft/Adebar
@@ -19,7 +18,7 @@ getSettings() {
   local msg
   # build.prop
   msg="$((adb ${ADBOPTS} pull /system/build.prop "${BUILDPROP}") 2>&1)"
-  doProgress "- build.prop: $msg" 2
+  doProgress "- build.prop: $(trim "${msg##*]}")" 2
 
   # wpa_supplicant.conf
   if [[ ${ROOT_COMPAT} -eq 1 ]]; then
@@ -43,9 +42,9 @@ getSettings() {
 
   # gps.conf, hosts
   msg="$((adb ${ADBOPTS} pull /system/etc/gps.conf "${CONFDIR}/gps.conf") 2>&1)"
-  doProgress "- gps.conf: $msg" 2
+  doProgress "- gps.conf: $(trim "${msg##*]}")" 2
   msg="$((adb ${ADBOPTS} pull /system/etc/hosts "${CONFDIR}/hosts") 2>&1)"
-  doProgress "- hosts: $msg" 2
+  doProgress "- hosts: $(trim "${msg##*]}")" 2
 
   # packages.xml
   if [[ ${ROOT_COMPAT} -eq 1 ]]; then
@@ -74,3 +73,77 @@ getSettings() {
   # ?
 }
 
+#
+# Get XPrivacy data
+#
+getXPrivacy() {
+  [[ $MK_XPRIVACY_EXPORT -lt 1 && $MK_XPRIVACY_PULL -lt 1 ]] && return
+  doProgress "Looking for XPrivacy data"
+
+  [[ $MK_XPRIVACY_EXPORT -gt 0 ]] && {
+    doProgress "- triggering XPrivacy export" 2
+    local filename="/sdcard/xprivacy_$(date +"%Y%m%d_%H%M%S").xml"
+    local msg="$((adb ${ADBOPTS} shell "am start -a biz.bokhorst.xprivacy.action.EXPORT -e FileName ${filename}") 2>&1)"
+    local -i sleepcount=0
+    local -i oldsize=0
+    local -i newsize=0
+    local newsizestr nobreak=0
+    doProgress "- waiting for XPrivacy export to complete" 2
+    while [[ $sleepcount -lt 10 ]] # 20s should be sufficient, else something went wrong
+    do
+      sleep 2 # give it some time to complete
+      if [[ -n "$(adb ${ADBOPTS} shell ls ${filename%/*}/ | grep ${filename##*/})" ]]; then
+        newsizestr=$(adb ${ADBOPTS} shell "ls -l ${filename} |awk '{print \$4}'")
+        newsize=(${newsizestr//[$'\r']})
+        if [[ $newsize -eq 0 ]]; then
+          sleepcount+=1
+          doProgress "  + export started, file still empty\r" 3 n
+          nobreak=1
+        elif [[ $newsize -eq $oldsize ]]; then  # not growing anymore
+          doProgress "  + export seems complete, final size: ${newsize} bytes" 3
+          nobreak=0
+          break
+        else
+          oldsize=$newsize
+          doProgress "  + export running, current size: ${newsize} bytes\r" 3 n
+          nobreak=1
+        fi
+      else
+        sleepcount+=1
+        doProgress "  + Loop ${sleepcount}, file not yet there\r" 3 n
+        nobreak=1
+      fi
+    done
+    [[ $nobreak -ne 0 ]] && doProgress "" 3
+    if [[ -n "$(adb ${ADBOPTS} shell ls ${filename%/*}/ | grep ${filename##*/})" ]]; then
+      sleep 2 # just another safeguard to ensure export is complete
+      local msg="$((adb ${ADBOPTS} pull ${filename} "${CONFDIR}/xprivacy.xml") 2>&1)"
+      adb ${ADBOPTS} shell rm ${filename}
+      [[ -f "${CONFDIR}/xprivacy.xml" ]] && gzip -9 "${CONFDIR}/xprivacy.xml"
+    else
+      echo -e "$(ansi_code "failed to pull export from XPrivacy. Are you sure you're running its PRO version?" "red")"
+    fi
+  }
+
+  [[ $MK_XPRIVACY_PULL -gt 0 ]] && {
+    [[ -n "$(adb ${ADBOPTS} shell 'su -c "ls /data/system/xprivacy 2>/dev/null"')" ]] && {
+      doProgress "- pulling XPrivacy databases" 2
+      mkdir "${CONFDIR}/xprivacy_dbs"
+      if [[ ${ROOT_COMPAT} -eq 1 ]]; then
+        local tmpdir="/sdcard/xprivacy_$(date +"%Y%m%d_%H%M%S")"
+        local msg="$((adb ${ADBOPTS} shell "su -c \"cp -a /data/system/xprivacy $tmpdir\"") 2>&1)"
+        if [[ "$msg" =~ "Permission denied" ]]; then
+          echo -e "$(ansi_code "$msg" "red")"
+        else # empty = OK (so maybe we need another check here)
+          msg="$((adb ${ADBOPTS} pull $tmpdir "${CONFDIR}/xprivacy_dbs") 2>&1)" # if OK, starts with "pull: building file list..."
+        fi
+        local msg2="$((adb ${ADBOPTS} shell rm -rf $tmpdir) 2>&1)" # empty $msg2 should mean success
+      else
+        local msg="$((adb ${ADBOPTS} pull /data/system/xprivacy "${CONFDIR}/xprivacy_dbs") 2>&1)"
+      fi
+      cd "${CONFDIR}"
+      tar czf "xprivacy_dbs.tar.gz" "xprivacy_dbs" && rm -rf "xprivacy_dbs"
+      cd - >/dev/null 2>&1
+    }
+  }
+}
